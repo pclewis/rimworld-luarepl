@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<MainButtonDefs>
+
+  <MainButtonDef>
+    <defName>LuaREPL</defName>
+    <label>Lua REPL</label>
+    <description>Whoa</description>
+    <tabWindowClass>LuaTest.MainTabWindow_LuaREPL</tabWindowClass>
+    <order>80</order>
+  </MainButtonDef>
+
+</MainButtonDefs>
