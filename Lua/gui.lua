@@ -1,33 +1,27 @@
-local UI         = require("Verse.UI")
-local GUI        = require("UnityEngine.GUI")
-local GUIStyle   = require("UnityEngine.GUIStyle")
-local GUIContent = require("UnityEngine.GUIContent")
-local Event      = require("UnityEngine.Event")
-local EventType  = require("UnityEngine.EventType")
-local KeyCode    = require("UnityEngine.KeyCode")
-local Widgets    = require("Verse.Widgets")
-local Log        = require("Verse.Log")
-local Text       = require("Verse.Text")
-local TextAnchor = require("UnityEngine.TextAnchor")
-local Color      = require("UnityEngine.Color")
-local GameFont   = require("Verse.GameFont")
-local Find       = require("Verse.Find")
-local Vector2    = require("UnityEngine.Vector2")
-local Rect       = require("UnityEngine.Rect")
+local UI              = require("Verse.UI")
+local GUI             = require("UnityEngine.GUI")
+local GUIStyle        = require("UnityEngine.GUIStyle")
+local GUIContent      = require("UnityEngine.GUIContent")
+local Event           = require("UnityEngine.Event")
+local EventType       = require("UnityEngine.EventType")
+local KeyCode         = require("UnityEngine.KeyCode")
+local Widgets         = require("Verse.Widgets")
+local Log             = require("Verse.Log")
+local Text            = require("Verse.Text")
+local TextAnchor      = require("UnityEngine.TextAnchor")
+local Color           = require("UnityEngine.Color")
+local GameFont        = require("Verse.GameFont")
+local Find            = require("Verse.Find")
+local Vector2         = require("UnityEngine.Vector2")
+local Rect            = require("UnityEngine.Rect")
+local HarmonyInstance = require("Harmony.HarmonyInstance")
+local HarmonyMethod   = require("Harmony.HarmonyMethod")
 
 local _
-
-local bufferWidth  = 0
-local bufferHeight = 0
-
 local gui = {}
 local MainTabWindow_LuaREPL = {}
 
-local defaultTextStyle = GUIStyle.__new(Text.fontStyles[0])
-defaultTextStyle.alignment = TextAnchor.MiddleLeft
-
-local defaultErrorStyle = GUIStyle.__new(defaultTextStyle)
-defaultErrorStyle.normal.textColor = Color.red
+local harmony = HarmonyInstance.Create("luarepl")
 
 local state = { output       = {}
               , outputLength = 0
@@ -36,9 +30,43 @@ local state = { output       = {}
               , outputScrollPosition = Vector2.__new()
               , inputHistory = {}
               , stashedInput = ""
-              , historyIndex = -1 }
+              , historyIndex = -1
+              , logMessageQueue = {} }
+
+
+function gui.patchLogMessage()
+  local patchClass =
+    class('LuaTest.LogMessageQueuePatch3', typeof(require('System.Object')),
+          {postfix=function(msg) state.logMessageQueue[#state.logMessageQueue+1] = msg.text end},
+          function(typeBuilder)
+            local method = typeBuilder.AddStaticMethod('postfix', typeof(require('System.Void')), { typeof(require('Verse.LogMessage')) }, 'postfix')
+            method.DefineParameter(1,0,"msg")
+          end
+    )
+  local original = typeof(require('Verse.LogMessageQueue')).GetMethod("Enqueue")
+  local postfix = patchClass.GetMethod("postfix")
+  harmony.Patch(original, nil, HarmonyMethod.__new(postfix))
+end
+
+gui.patchLogMessage()
+
+local bufferWidth  = 0
+local bufferHeight = 0
+
+local defaultTextStyle = GUIStyle.__new(Text.fontStyles[0])
+defaultTextStyle.alignment = TextAnchor.MiddleLeft
+
+local defaultErrorStyle = GUIStyle.__new(defaultTextStyle)
+defaultErrorStyle.normal.textColor = Color.red
 
 function MainTabWindow_LuaREPL:DoWindowContents(inRect)
+
+  if #state.logMessageQueue > 0 then
+    for i, msg in pairs(state.logMessageQueue) do
+      gui.print(msg)
+    end
+    state.logMessageQueue = {}
+  end
 
   bufferWidth  = inRect.width - 20
   bufferHeight = inRect.height - 50
