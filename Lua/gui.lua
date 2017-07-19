@@ -18,26 +18,15 @@ local Rect            = require('UnityEngine.Rect')
 local HarmonyInstance = require('Harmony.HarmonyInstance')
 local HarmonyMethod   = require('Harmony.HarmonyMethod')
 local TextEditor      = require('UnityEngine.TextEditor')
+local Find            = require('Verse.Find')
 
 local _
 
 local CONTROL_NAME_REPL_INPUT = 'replInput'
 
-local Window_LuaREPL        = {
-  output               = {},
-  outputLength         = 0,
-  outputHeight         = 0,
-  inputBuffer          = "",
-  outputScrollPosition = Vector2.__new(),
-  inputHistory         = {},
-  stashedInput         = "",
-  historyIndex         = -1,
-  logMessageQueue      = {},
-}
-
-local MainTabWindow_LuaREPL = {}
-local EditWindow_LuaREPL    = {}
-
+local Window_LuaREPL        = {}
+local MainTabWindow_LuaREPL = {popText = 'Pop Out'}
+local EditWindow_LuaREPL    = {popText = 'Pop In'}
 setmetatable(MainTabWindow_LuaREPL, {__index=Window_LuaREPL})
 setmetatable(EditWindow_LuaREPL, {__index=Window_LuaREPL})
 
@@ -46,6 +35,18 @@ defaultTextStyle.alignment = TextAnchor.MiddleLeft
 
 local defaultErrorStyle = GUIStyle.__new(defaultTextStyle)
 defaultErrorStyle.normal.textColor = Color.red
+
+function Window_LuaREPL:__new()
+  self.output               = {}
+  self.outputLength         = 0
+  self.outputHeight         = 0
+  self.inputBuffer          = ""
+  self.outputScrollPosition = Vector2.__new()
+  self.inputHistory         = {}
+  self.stashedInput         = ""
+  self.historyIndex         = -1
+  self.logMessageQueue      = {}
+end
 
 function Window_LuaREPL:CheckForNewLogMessages()
   if #self.logMessageQueue > 0 then
@@ -98,13 +99,17 @@ function Window_LuaREPL:RenderControls(inRect)
 
   Text.Font = GameFont.Tiny
 
-  if Widgets.ButtonText( Rect.__new(inRect.width - 100, 0, 100, 25), "Reload GUI") then
+  if Widgets.ButtonText( Rect.__new(inRect.width - 150, 0, 100, 25), "Reload GUI") then
     self:Reload()
+  end
+
+  if Widgets.ButtonText( Rect.__new(inRect.width - 250, 0, 100, 25), self.popText) then
+    self:PopInOrOut()
   end
 
   GUI.SetNextControlName( CONTROL_NAME_REPL_INPUT )
   self.inputBuffer = Widgets.TextField(
-    Rect.__new(0, inRect.height - 25, inRect.width, 25),
+    Rect.__new(0, inRect.height - 25, inRect.width - 15, 25),
     self.inputBuffer)
 
   self.outputScrollPosition = GUI.BeginScrollView(
@@ -126,10 +131,6 @@ end
 function Window_LuaREPL:get_InitialSize()
   return Vector2.__new(UI.screenWidth / 4 * 3, UI.screenHeight / 2)
 end
-
-class( "LuaTest.MainTabWindow_LuaREPL",
-       typeof(require('RimWorld.MainTabWindow')),
-       MainTabWindow_LuaREPL )
 
 function Window_LuaREPL:HandleInputLine()
   self:AppendOutput( ">" .. self.inputBuffer )
@@ -175,11 +176,7 @@ end
 
 function Window_LuaREPL:Reload(resetState)
   package.loaded.gui = nil
-  for k,v in pairs(require 'gui') do
-    if resetState or type(v) == 'function' then
-      self[k] = v
-    end
-  end
+  Window_LuaREPL =require('gui')
 end
 
 function Window_LuaREPL:IsRectVisible(rect)
@@ -261,6 +258,28 @@ function Window_LuaREPL:AppendOutputObject(x, style)
   self.outputLength = self.outputLength + 1
   self.output[self.outputLength] = x
 end
+
+local type_MainTabWindow_LuaREPL = class(
+    "LuaTest.MainTabWindow_LuaREPL",
+    typeof(require('RimWorld.MainTabWindow')),
+    MainTabWindow_LuaREPL )
+
+local type_EditWindow_LuaREPL = class(
+    "LuaTest.EditWindow_LuaREPL",
+    typeof(require('Verse.EditWindow')),
+    EditWindow_LuaREPL )
+
+function MainTabWindow_LuaREPL:PopInOrOut()
+  Find.WindowStack.Add(require('LuaTest.EditWindow_LuaREPL').__new())
+  self:Close(true)
+end
+
+function EditWindow_LuaREPL:PopInOrOut()
+  local def = require ('Verse.DefDatabase`1[RimWorld.MainButtonDef]').GetNamed("LuaREPL")
+  Find.MainTabsRoot.SetCurrentTab(def)
+  self:Close(true)
+end
+
 
 -- Harmony Patches
 --[[
