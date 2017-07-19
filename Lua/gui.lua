@@ -67,11 +67,11 @@ function Window_LuaREPL:HandleEvent(event)
     elseif (event.keyCode == KeyCode.DownArrow) then
       self:ScrollHistory(-1)
     elseif (event.keyCode == KeyCode.A and event.control and event.shift) then
-      self:SetInputCursorPosition(0, #self.inputBuffer+1)
+      self:SetInputCursorPosition(0, #self.inputBuffer)
     elseif (event.keyCode == KeyCode.A and event.control) then
       self:SetInputCursorPosition(0)
     elseif (event.keyCode == KeyCode.E and event.control) then
-      self:SetInputCursorPosition(#self.inputBuffer+1)
+      self:SetInputCursorPosition(#self.inputBuffer)
     else
       return
     end
@@ -84,6 +84,8 @@ function Window_LuaREPL:SetInputCursorPosition(cursorIndex, selectIndex)
     selectIndex = cursorIndex
   end
   local editor = GUIUtility.GetStateObject( typeof(TextEditor), GUIUtility.keyboardControl )
+  -- HACK: update text so we can move position in ScrollHistory
+  editor.text = self.inputBuffer
   editor.cursorIndex = cursorIndex
   editor.selectIndex = selectIndex
 end
@@ -167,6 +169,7 @@ function Window_LuaREPL:ScrollHistory(offset)
       self.inputBuffer = self.stashedInput
     end
     self.historyIndex = newIndex
+    self:SetInputCursorPosition(#self.inputBuffer)
   end
 end
 
