@@ -1,57 +1,45 @@
-local UI              = require("Verse.UI")
-local GUI             = require("UnityEngine.GUI")
-local GUIStyle        = require("UnityEngine.GUIStyle")
-local GUIContent      = require("UnityEngine.GUIContent")
-local Event           = require("UnityEngine.Event")
-local EventType       = require("UnityEngine.EventType")
-local KeyCode         = require("UnityEngine.KeyCode")
-local Widgets         = require("Verse.Widgets")
-local Log             = require("Verse.Log")
-local Text            = require("Verse.Text")
-local TextAnchor      = require("UnityEngine.TextAnchor")
-local Color           = require("UnityEngine.Color")
-local GameFont        = require("Verse.GameFont")
-local Find            = require("Verse.Find")
-local Vector2         = require("UnityEngine.Vector2")
-local Rect            = require("UnityEngine.Rect")
-local HarmonyInstance = require("Harmony.HarmonyInstance")
-local HarmonyMethod   = require("Harmony.HarmonyMethod")
+local UI              = require('Verse.UI')
+local GUI             = require('UnityEngine.GUI')
+local GUIStyle        = require('UnityEngine.GUIStyle')
+local GUIContent      = require('UnityEngine.GUIContent')
+local GUIUtility      = require('UnityEngine.GUIUtility')
+local Event           = require('UnityEngine.Event')
+local EventType       = require('UnityEngine.EventType')
+local KeyCode         = require('UnityEngine.KeyCode')
+local Widgets         = require('Verse.Widgets')
+local Log             = require('Verse.Log')
+local Text            = require('Verse.Text')
+local TextAnchor      = require('UnityEngine.TextAnchor')
+local Color           = require('UnityEngine.Color')
+local GameFont        = require('Verse.GameFont')
+local Find            = require('Verse.Find')
+local Vector2         = require('UnityEngine.Vector2')
+local Rect            = require('UnityEngine.Rect')
+local HarmonyInstance = require('Harmony.HarmonyInstance')
+local HarmonyMethod   = require('Harmony.HarmonyMethod')
+local TextEditor      = require('UnityEngine.TextEditor')
 
 local _
-local gui = {}
+
+local CONTROL_NAME_REPL_INPUT = 'replInput'
+
+local Window_LuaREPL        = {
+  output               = {},
+  outputLength         = 0,
+  outputHeight         = 0,
+  inputBuffer          = "",
+  outputScrollPosition = Vector2.__new(),
+  inputHistory         = {},
+  stashedInput         = "",
+  historyIndex         = -1,
+  logMessageQueue      = {},
+}
+
 local MainTabWindow_LuaREPL = {}
+local EditWindow_LuaREPL    = {}
 
-local harmony = HarmonyInstance.Create("luarepl")
-
-local state = { output       = {}
-              , outputLength = 0
-              , outputHeight = 0
-              , inputBuffer  = ""
-              , outputScrollPosition = Vector2.__new()
-              , inputHistory = {}
-              , stashedInput = ""
-              , historyIndex = -1
-              , logMessageQueue = {} }
-
-
-function gui.patchLogMessage()
-  local patchClass =
-    class('LuaTest.LogMessageQueuePatch3', typeof(require('System.Object')),
-          {postfix=function(msg) state.logMessageQueue[#state.logMessageQueue+1] = msg.text end},
-          function(typeBuilder)
-            local method = typeBuilder.AddStaticMethod('postfix', typeof(require('System.Void')), { typeof(require('Verse.LogMessage')) }, 'postfix')
-            method.DefineParameter(1,0,"msg")
-          end
-    )
-  local original = typeof(require('Verse.LogMessageQueue')).GetMethod("Enqueue")
-  local postfix = patchClass.GetMethod("postfix")
-  harmony.Patch(original, nil, HarmonyMethod.__new(postfix))
-end
-
-gui.patchLogMessage()
-
-local bufferWidth  = 0
-local bufferHeight = 0
+setmetatable(MainTabWindow_LuaREPL, {__index=Window_LuaREPL})
+setmetatable(EditWindow_LuaREPL, {__index=Window_LuaREPL})
 
 local defaultTextStyle = GUIStyle.__new(Text.fontStyles[0])
 defaultTextStyle.alignment = TextAnchor.MiddleLeft
@@ -59,145 +47,153 @@ defaultTextStyle.alignment = TextAnchor.MiddleLeft
 local defaultErrorStyle = GUIStyle.__new(defaultTextStyle)
 defaultErrorStyle.normal.textColor = Color.red
 
-function MainTabWindow_LuaREPL:DoWindowContents(inRect)
-
-  if #state.logMessageQueue > 0 then
-    for i, msg in pairs(state.logMessageQueue) do
-      gui.print(msg)
+function Window_LuaREPL:CheckForNewLogMessages()
+  if #self.logMessageQueue > 0 then
+    for _, msg in ipairs(self.logMessageQueue) do
+      self:AppendOutput(msg)
     end
-    state.logMessageQueue = {}
+    self.logMessageQueue = {}
   end
+end
 
-  bufferWidth  = inRect.width - 20
-  bufferHeight = inRect.height - 50
-
-  local e = Event.current
-
-  if e.type == EventType.KeyDown then
-    if (e.keyCode == KeyCode.Return) then
-      gui.OnReturn()
-    elseif (e.keyCode == KeyCode.UpArrow) then
-      gui.OnUpArrow()
-    elseif (e.keyCode == KeyCode.DownArrow) then
-      gui.OnDownArrow()
+function Window_LuaREPL:HandleEvent(event)
+  if event.type == EventType.KeyDown and
+    GUI.GetNameOfFocusedControl() == CONTROL_NAME_REPL_INPUT
+  then
+    if (event.keyCode == KeyCode.Return) then
+      self:HandleInputLine()
+    elseif (event.keyCode == KeyCode.UpArrow) then
+      self:ScrollHistory(1)
+    elseif (event.keyCode == KeyCode.DownArrow) then
+      self:ScrollHistory(-1)
+    elseif (event.keyCode == KeyCode.A and event.control and event.shift) then
+      self:SetInputCursorPosition(0, #self.inputBuffer+1)
+    elseif (event.keyCode == KeyCode.A and event.control) then
+      self:SetInputCursorPosition(0)
+    elseif (event.keyCode == KeyCode.E and event.control) then
+      self:SetInputCursorPosition(#self.inputBuffer+1)
+    else
+      return
     end
+    event.Use()
   end
+end
+
+function Window_LuaREPL:SetInputCursorPosition(cursorIndex, selectIndex)
+  if selectIndex == nil then
+    selectIndex = cursorIndex
+  end
+  local editor = GUIUtility.GetStateObject( typeof(TextEditor), GUIUtility.keyboardControl )
+  editor.cursorIndex = cursorIndex
+  editor.selectIndex = selectIndex
+end
+
+function Window_LuaREPL:RenderControls(inRect)
+  self.bufferWidth  = inRect.width - 20
+  self.bufferHeight = inRect.height - 50
+
+  GUI.BeginGroup(inRect)
 
   Text.Font = GameFont.Tiny
 
-  GUI.BeginGroup(inRect)
   if Widgets.ButtonText( Rect.__new(inRect.width - 100, 0, 100, 25), "Reload GUI") then
-    gui:reload()
+    self:Reload()
   end
 
-  local status, err = pcall( function()
-      state.inputBuffer = Widgets.TextField( Rect.__new(0, inRect.height - 25, inRect.width, 25),
-                                             state.inputBuffer)
+  GUI.SetNextControlName( CONTROL_NAME_REPL_INPUT )
+  self.inputBuffer = Widgets.TextField(
+    Rect.__new(0, inRect.height - 25, inRect.width, 25),
+    self.inputBuffer)
 
-      state.outputScrollPosition = GUI.BeginScrollView( Rect.__new(0,20,inRect.width,bufferHeight),
-                                                        state.outputScrollPosition,
-                                                        Rect.__new(0,0,bufferWidth,state.outputHeight) )
-      gui.renderOutput()
-      GUI.EndScrollView()
-  end)
+  self.outputScrollPosition = GUI.BeginScrollView(
+    Rect.__new(0,20,inRect.width,self.bufferHeight),
+    self.outputScrollPosition,
+    Rect.__new(0,0,self.bufferWidth,self.outputHeight) )
+  self:RenderOutput()
+  GUI.EndScrollView()
 
-  if not status then
-    if typeof(require("MoonSharp.Interpreter.InterpreterException")).IsInstanceOfType(err) then
-      Log.Message("Error drawing GUI " .. err.DecoratedMessage)
-    else
-      Log.Message("Error drawing GUI " .. tostring(err))
-    end
-  end
   GUI.EndGroup()
 end
 
-function MainTabWindow_LuaREPL:get_InitialSize()
+function Window_LuaREPL:DoWindowContents(inRect)
+  self:CheckForNewLogMessages()
+  self:HandleEvent(Event.current)
+  self:RenderControls(inRect)
+end
+
+function Window_LuaREPL:get_InitialSize()
   return Vector2.__new(UI.screenWidth / 4 * 3, UI.screenHeight / 2)
 end
 
-class( "LuaTest.MainTabWindow_LuaREPL", typeof(require('RimWorld.MainTabWindow')), MainTabWindow_LuaREPL )
+class( "LuaTest.MainTabWindow_LuaREPL",
+       typeof(require('RimWorld.MainTabWindow')),
+       MainTabWindow_LuaREPL )
 
-function gui.OnReturn()
-  gui.appendOutput( ">" .. state.inputBuffer )
-  local fn, err = load(state.inputBuffer, "(repl)")
+function Window_LuaREPL:HandleInputLine()
+  self:AppendOutput( ">" .. self.inputBuffer )
+  local fn, err = load(self.inputBuffer, "(repl)")
   if not fn then
-    gui.appendOutput( "ERROR: " .. tostring(err), defaultErrorStyle )
+    self:AppendOutput( "ERROR: " .. tostring(err), defaultErrorStyle )
   else
     local status, result = pcall(fn)
     if status then
-      gui.appendOutput( result )
+      self:AppendOutput( result )
     else
       if typeof(require("MoonSharp.Interpreter.InterpreterException")).IsInstanceOfType(result) then
-        gui.appendOutput( "ERROR: " .. result.DecoratedMessage, defaultErrorStyle )
+        self:AppendOutput( "ERROR: " .. result.DecoratedMessage, defaultErrorStyle )
       else
-        gui.appendOutput( "ERROR: " .. tostring(result), defaultErrorStyle )
+        self:AppendOutput( "ERROR: " .. tostring(result), defaultErrorStyle )
       end
     end
   end
-  state.inputHistory[#state.inputHistory + 1] = state.inputBuffer;
-  state.historyIndex = -1
-  state.inputBuffer = ""
+  self.inputHistory[#self.inputHistory + 1] = self.inputBuffer;
+  self.historyIndex = -1
+  self.inputBuffer = ''
 end
 
-function gui.OnUpArrow()
-  if state.historyIndex == -1 then
-    state.stashedInput = state.inputBuffer
+function Window_LuaREPL:ScrollHistory(offset)
+  if self.historyIndex == -1 then
+    self.stashedInput = self.inputBuffer
   end
 
-  if state.historyIndex < #state.inputHistory then
-    state.historyIndex = state.historyIndex + 1
-    state.inputBuffer = state.inputHistory[ #state.inputHistory - state.historyIndex ]
-  end
-end
+  local newIndex = self.historyIndex + offset
+  newIndex = math.min(newIndex, #self.inputHistory)
+  newIndex = math.max(newIndex, -1)
 
-function gui.OnDownArrow()
-  if state.historyIndex > -1 then
-    state.historyIndex = state.historyIndex - 1
-
-    if state.historyIndex == -1 then
-      state.inputBuffer = state.stashedInput
+  if newIndex ~= self.historyIndex then
+    if newIndex >= 0 then
+      self.inputBuffer = self.inputHistory[ #self.inputHistory - newIndex ]
     else
-      state.inputBuffer = state.inputHistory[ #state.inputHistory - state.historyIndex ]
+      self.inputBuffer = self.stashedInput
+    end
+    self.historyIndex = newIndex
+  end
+end
+
+function Window_LuaREPL:Reload(resetState)
+  package.loaded.gui = nil
+  for k,v in pairs(require 'gui') do
+    if resetState or type(v) == 'function' then
+      self[k] = v
     end
   end
 end
 
-function gui:reload(resetState)
-  package.loaded.gui = nil
-  for k,v in pairs(require 'gui') do
-    self[k] = v
-  end
-  if not resetState then
-    self.inheritState(state)
-  end
-end
-
-function gui.inheritState(oldstate)
-  for k,v in pairs(oldstate) do
-    state[k] = v
-  end
-end
-
-function gui.print(msg)
-  gui.appendOutput( msg )
-end
-
-function gui.isRectVisible(rect)
+function Window_LuaREPL:IsRectVisible(rect)
   local rectTop = rect.y
   local rectBottom = rectTop + rect.height
-  local viewTop = state.outputScrollPosition.y
-  local viewBottom = viewTop + bufferHeight
+  local viewTop = self.outputScrollPosition.y
+  local viewBottom = viewTop + self.bufferHeight
 
   return (rectTop >= viewTop and rectTop <= viewBottom) or
     (rectBottom >= viewTop and rectBottom <= viewBottom)
-
 end
 
-function gui.renderOutput()
+function Window_LuaREPL:RenderOutput()
   local y = 0
-  for _,x in ipairs(state.output) do
+  for _,x in ipairs(self.output) do
     x.rect.y = y
-    if gui.isRectVisible(x.rect) then
+    if self:IsRectVisible(x.rect) then
       x.render( x.rect, x.content or x, x.style )
       if x.onClick and Widgets.ButtonInvisible( x.rect ) then
         x.onClick()
@@ -205,11 +201,10 @@ function gui.renderOutput()
     end
     y = y + x.rect.height
   end
-  state.outputHeight = y
+  self.outputHeight = y
 end
 
-
-function gui.appendOutput(x,style)
+function Window_LuaREPL:AppendOutput(x,style)
   local result = { content=GUIContent.__new() }
   if type(x) == 'string' then
     result.content.text = x
@@ -217,14 +212,14 @@ function gui.appendOutput(x,style)
     if typeof(require('Verse.ThingDef')).IsInstanceOfType(x) then
       result.content.image = x.uiIcon;
       result.content.text  = x.label;
-      result.rect          = Rect.__new(0, state.outputHeight, bufferWidth, 20)
+      result.rect          = Rect.__new(0, self.outputHeight, self.bufferWidth, 20)
       result.onClick = function()
         Find.WindowStack.Add( require("Verse.Dialog_InfoCard").__new(x) )
       end
     elseif typeof(require('Verse.Thing')).IsInstanceOfType(x) then
       result.content.image = x.def.uiIcon;
       result.content.text  = x.label;
-      result.rect          = Rect.__new(0, state.outputHeight, bufferWidth, 20)
+      result.rect          = Rect.__new(0, self.outputHeight, self.bufferWidth, 20)
       result.onClick = function()
         Find.WindowStack.Add( require("Verse.Dialog_InfoCard").__new(x) )
       end
@@ -240,28 +235,59 @@ function gui.appendOutput(x,style)
     result.content.text = tostring(x)
   end
 
-  gui.appendOutputObject(result, style)
+  self:AppendOutputObject(result, style)
 end
 
-function gui.appendOutputObject(x, style)
+function Window_LuaREPL:AppendOutputObject(x, style)
   x.style  = x.style  or style or defaultTextStyle
-  x.rect   = x.rect   or Rect.__new(0, 0, bufferWidth, x.style.CalcHeight(x.content, bufferWidth))
+  x.rect   = x.rect   or Rect.__new(0, 0, self.bufferWidth, x.style.CalcHeight(x.content, self.bufferWidth))
 
   -- x.render = x.render or GUI.Label breaks reloading of class render methods
   if not x.render then
     x.render = GUI.Label
   end
 
-  x.rect.y = state.outputHeight
+  x.rect.y = self.outputHeight
 
-  if state.outputScrollPosition.y + bufferHeight >= state.outputHeight then
-    state.outputScrollPosition.y = state.outputScrollPosition.y + x.rect.height
+  if self.outputScrollPosition.y + self.bufferHeight >= self.outputHeight then
+    self.outputScrollPosition.y = self.outputScrollPosition.y + x.rect.height
   end
 
-  state.outputHeight = state.outputHeight + x.rect.height
+  self.outputHeight = self.outputHeight + x.rect.height
 
-  state.outputLength = state.outputLength + 1
-  state.output[state.outputLength] = x
+  self.outputLength = self.outputLength + 1
+  self.output[self.outputLength] = x
 end
 
-return gui
+-- Harmony Patches
+--[[
+if not pcall(|| require('LuaREPL.LogMessageQueuePatch')) then
+  local harmony = HarmonyInstance.Create("luarepl")
+
+  -- Intercept debug log messages
+  local patchClass = class(
+    'LuaREPL.LogMessageQueuePatch',
+    typeof(require('System.Object')),
+    {postfix=function(msg)
+       Window_LuaREPL.logMessageQueue[#Window_LuaREPL.logMessageQueue+1] = msg.text
+    end},
+    function(typeBuilder)
+      local method = typeBuilder.AddStaticMethod(
+        'postfix',
+        typeof(require('System.Void')),
+        { typeof(require('Verse.LogMessage')) },
+        'postfix'
+      )
+      method.DefineParameter(1,0,"msg")
+    end
+  )
+
+  local original = typeof(require('Verse.LogMessageQueue')).GetMethod("Enqueue")
+  local postfix  = patchClass.GetMethod("postfix")
+
+  harmony.Patch(original, nil, HarmonyMethod.__new(postfix))
+  end
+]]--
+
+
+return Window_LuaREPL
